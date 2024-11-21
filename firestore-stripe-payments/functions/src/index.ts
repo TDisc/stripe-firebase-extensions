@@ -15,6 +15,7 @@
  */
 
 import * as admin from 'firebase-admin';
+import { getAuth } from "firebase-admin/auth";
 import { getEventarc } from 'firebase-admin/eventarc';
 import * as functions from 'firebase-functions';
 import Stripe from 'stripe';
@@ -28,6 +29,8 @@ import {
 import * as logs from './logs';
 import config from './config';
 import { Timestamp } from 'firebase-admin/firestore';
+import {UserRecord} from "firebase-functions/v1/auth";
+import {FirebaseError} from "firebase-admin";
 
 const apiVersion = '2022-11-15';
 const stripe = new Stripe(config.stripeSecretKey, {
@@ -41,6 +44,70 @@ const stripe = new Stripe(config.stripeSecretKey, {
 });
 
 admin.initializeApp();
+
+async function fetchUidFromEmail(newEmail: string): Promise<[string | null, UserRecord | null]> {
+  try {
+    return fetchUidFromEmailAndThrow(newEmail);
+  } catch (e) {
+    console.error("failed to get uid from email", e);
+    return [null, null];
+  }
+}
+
+async function fetchUidFromEmailAndThrow(
+    newEmail: string,
+): Promise<[string | null, UserRecord | null]> {
+  if (newEmail === "unknown") {
+    return ["unknown", null];
+  } else {
+    let user: UserRecord | null = null;
+    try {
+      // find user by primary email
+      user = await getAuth().getUserByEmail(newEmail);
+    } catch (e) {
+      const error: FirebaseError = e as FirebaseError;
+      if (error.code === "auth/invalid-email") {
+        console.warn("invalid email: " + newEmail, e);
+        return [null, null];
+      }
+      if (error.code !== "auth/user-not-found") {
+        console.error(error);
+        throw error;
+      }
+      // drop through and create the user
+    }
+
+    if (!user) {
+      console.log("Creating user for email: " + newEmail);
+      try {
+        user = await getAuth().createUser({
+          email: newEmail,
+        });
+      } catch (e) {
+        const error: FirebaseError = e as FirebaseError;
+        if (error.code !== "auth/email-already-exists") {
+          console.error(error);
+          throw error;
+        }
+
+        // find user by email address using search
+        const results = await getAuth().getUsers([{ email: newEmail }]);
+        if (results.users.length) {
+          user = results.users[0];
+        }
+      }
+    }
+
+    if (!user) {
+      console.error("Failed to create user for email: " + newEmail);
+      throw new functions.https.HttpsError(
+          "invalid-argument",
+          "failed to create user for email: " + newEmail,
+      );
+    }
+    return [user.uid, user];
+  }
+}
 
 const eventChannel =
   process.env.EVENTARC_CHANNEL &&
@@ -527,15 +594,39 @@ const manageSubscriptionStatusChange = async (
   createAction: boolean
 ): Promise<void> => {
   // Get customer's UID from Firestore
-  const customersSnap = await admin
-    .firestore()
-    .collection(config.customersCollectionPath)
-    .where('stripeId', '==', customerId)
-    .get();
+  const customerCollection = admin
+      .firestore()
+      .collection(config.customersCollectionPath);
+  const query = customerCollection
+      .where('stripeId', '==', customerId);
+  let customersSnap = await query.get();
+
   if (customersSnap.size !== 1) {
+    const customer = await stripe.customers.retrieve(customerId) as Stripe.Customer;
+    if (customer.email) {
+      const [uid, user] = await fetchUidFromEmail(customer.email);
+      if (uid) {
+        const customerRecord = {
+          email: customer.email,
+          stripeId: customerId,
+          stripeLink: `https://dashboard.stripe.com${
+              customer.livemode ? '' : '/test'
+          }/customers/${customerId}`,
+        };
+        await customerCollection.doc(uid).set(customerRecord, { merge: true });
+
+        customersSnap = await query.get();
+      }
+    }
+  }
+
+  if (customersSnap.size !== 1) {
+    console.error('User not found for stripeId: ', customerId);
     throw new Error('User not found!');
   }
+
   const uid = customersSnap.docs[0].id;
+
   // Retrieve latest subscription status and write it to the Firestore
   const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
     expand: ['default_payment_method', 'items.data.price.product'],
