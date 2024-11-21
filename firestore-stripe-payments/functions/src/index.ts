@@ -215,6 +215,7 @@ exports.createCheckoutSession = functions
       expires_at,
       phone_number_collection = {},
       payment_method_collection = 'always',
+      subscription_data = {},
     } = snap.data();
     try {
       logs.creatingCheckoutSession(context.params.id);
@@ -277,6 +278,7 @@ exports.createCheckoutSession = functions
           sessionCreateParams.payment_method_collection =
             payment_method_collection;
           sessionCreateParams.subscription_data = {
+            ...subscription_data,
             metadata,
           };
           if (trial_period_days) {
