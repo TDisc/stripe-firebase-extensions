@@ -244,7 +244,9 @@ exports.createCheckoutSession = functions
           metadata: {
             td_promo_code,
           },
-        });
+        },
+            { idempotencyKey: context.params.id }
+            );
         return;
       }
 
