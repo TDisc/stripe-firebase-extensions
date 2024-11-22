@@ -26,7 +26,7 @@ import * as logs from './logs';
 import config from './config';
 import {Timestamp} from 'firebase-admin/firestore';
 import {UserRecord} from "firebase-functions/v1/auth";
-import {fetch} from 'node-fetch';
+import fetch from 'node-fetch';
 
 const apiVersion = '2022-11-15';
 const stripe = new Stripe(config.stripeSecretKey, {
