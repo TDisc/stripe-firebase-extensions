@@ -212,6 +212,7 @@ exports.createCheckoutSession = functions
       phone_number_collection = {},
       payment_method_collection = 'always',
       subscription_data = {},
+      td_promo_code,
     } = snap.data();
     try {
       logs.creatingCheckoutSession(context.params.id);
@@ -228,6 +229,24 @@ exports.createCheckoutSession = functions
         });
       }
       const customer = customerRecord.stripeId;
+
+      if (td_promo_code) {
+        // Crate subscription directly from the promo code
+        const subscription = await stripe.subscriptions.create({
+          customer,
+          items: [{ price: "price_1PyIWsFBIwpy1XnfFUQyRmmo" }],
+          trial_period_days: trial_period_days || 62,
+          trial_settings: {
+            end_behavior: {
+                missing_payment_method: 'cancel',
+            }
+          },
+          metadata: {
+            td_promo_code,
+          },
+        });
+        return;
+      }
 
       if (client === 'web') {
         // Get shipping countries
