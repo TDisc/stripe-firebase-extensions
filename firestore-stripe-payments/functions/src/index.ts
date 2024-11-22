@@ -234,7 +234,7 @@ exports.createCheckoutSession = functions
         // Crate subscription directly from the promo code
         const subscription = await stripe.subscriptions.create({
           customer,
-          items: [{ price: "price_1PyIWsFBIwpy1XnfFUQyRmmo" }],
+          items: [{ price: price ?? "price_1PyIWsFBIwpy1XnfFUQyRmmo" }],
           trial_period_days: trial_period_days || 62,
           trial_settings: {
             end_behavior: {
