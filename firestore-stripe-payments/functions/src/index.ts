@@ -15,22 +15,18 @@
  */
 
 import * as admin from 'firebase-admin';
-import { getAuth } from "firebase-admin/auth";
-import { getEventarc } from 'firebase-admin/eventarc';
+import {FirebaseError} from 'firebase-admin';
+import {getAuth} from "firebase-admin/auth";
+import {getEventarc} from 'firebase-admin/eventarc';
 import * as functions from 'firebase-functions';
+import {logger} from 'firebase-functions';
 import Stripe from 'stripe';
-import {
-  Product,
-  Price,
-  Subscription,
-  CustomerData,
-  TaxRate,
-} from './interfaces';
+import {CustomerData, Price, Product, Subscription, TaxRate,} from './interfaces';
 import * as logs from './logs';
 import config from './config';
-import { Timestamp } from 'firebase-admin/firestore';
+import {Timestamp} from 'firebase-admin/firestore';
 import {UserRecord} from "firebase-functions/v1/auth";
-import {FirebaseError} from "firebase-admin";
+import {fetch} from 'node-fetch';
 
 const apiVersion = '2022-11-15';
 const stripe = new Stripe(config.stripeSecretKey, {
@@ -707,6 +703,32 @@ const manageSubscriptionStatusChange = async (
       const { customClaims } = await admin.auth().getUser(uid);
       // Set new role in custom claims as long as the subs status allows
       if (['trialing', 'active'].includes(subscription.status)) {
+
+        // https://www.revenuecat.com/docs/web/stripe#5-send-stripe-tokens-to-revenuecat
+        // curl -X POST \
+        //   https://api.revenuecat.com/v1/receipts \
+        //   -H 'Content-Type: application/json' \
+        //   -H 'X-Platform: stripe' \
+        //   -H 'Authorization: Bearer YOUR_REVENUECAT_STRIPE_APP_PUBLIC_API_KEY' \
+        //   -d '{ "app_user_id": "my_app_user_id",
+        //   "fetch_token": "sub_xxxxxxxxxx"
+        //   }'
+        const headers = {
+          'Content-Type': 'application/json',
+          'X-Platform': 'stripe',
+          'Authorization': `Bearer strp_bscjpIVjOVAxvbpdNqhpZrdIapY`,
+        };
+        const data = {
+          app_user_id: uid,
+          fetch_token: subscription.id,
+        };
+        const response = await fetch('https://api.revenuecat.com/v1/receipts', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(data),
+        });
+        console.log('response', response);
+
         logs.userCustomClaimSet(uid, 'stripeRole', role);
         await admin
           .auth()
@@ -718,6 +740,7 @@ const manageSubscriptionStatusChange = async (
           .setCustomUserClaims(uid, { ...customClaims, stripeRole: null });
       }
     } catch (error) {
+      logger.error("failed up date custom claims", error);
       // User has been deleted, simply return.
       return;
     }
