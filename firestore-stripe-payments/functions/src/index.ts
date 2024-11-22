@@ -231,22 +231,27 @@ exports.createCheckoutSession = functions
       const customer = customerRecord.stripeId;
 
       if (td_promo_code) {
-        // Crate subscription directly from the promo code
-        const subscription = await stripe.subscriptions.create({
-          customer,
-          items: [{ price: price ?? "price_1PyIWsFBIwpy1XnfFUQyRmmo" }],
-          trial_period_days: trial_period_days || 62,
-          trial_settings: {
-            end_behavior: {
-                missing_payment_method: 'cancel',
-            }
-          },
-          metadata: {
-            td_promo_code,
-          },
-        },
-            { idempotencyKey: context.params.id }
-            );
+        try {
+          // Crate subscription directly from the promo code
+          const subscription = await stripe.subscriptions.create({
+                customer,
+                items: [{price: price ?? "price_1PyIWsFBIwpy1XnfFUQyRmmo"}],
+                trial_period_days: trial_period_days || 62,
+                trial_settings: {
+                  end_behavior: {
+                    missing_payment_method: 'cancel',
+                  }
+                },
+                metadata: {
+                  td_promo_code,
+                },
+              },
+              {idempotencyKey: context.params.id}
+          );
+          logger.log("created subscription for user: " + context.params.uid + " with promo code: " + td_promo_code);
+        } catch (error) {
+          logger.error("FAILED to create subscription for user: " + context.params.uid + " with promo code: " + td_promo_code);
+        }
         return;
       }
 
@@ -604,6 +609,38 @@ const copyBillingDetailsToCustomer = async (
   await stripe.customers.update(customer, { name, phone, address });
 };
 
+async function linkToRevenueCat(uid: string, subscription: Stripe.Subscription) {
+  try {
+    // https://www.revenuecat.com/docs/web/stripe#5-send-stripe-tokens-to-revenuecat
+    // curl -X POST \
+    //   https://api.revenuecat.com/v1/receipts \
+    //   -H 'Content-Type: application/json' \
+    //   -H 'X-Platform: stripe' \
+    //   -H 'Authorization: Bearer YOUR_REVENUECAT_STRIPE_APP_PUBLIC_API_KEY' \
+    //   -d '{ "app_user_id": "my_app_user_id",
+    //   "fetch_token": "sub_xxxxxxxxxx"
+    //   }'
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Platform': 'stripe',
+      'Authorization': `Bearer strp_bscjpIVjOVAxvbpdNqhpZrdIapY`,
+    };
+    const data = {
+      app_user_id: uid,
+      fetch_token: subscription.id,
+    };
+    const response = await fetch('https://api.revenuecat.com/v1/receipts', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+    });
+    logger.log("linked stripe subscription to revenuecat for user: " + uid + " with subscription: " + subscription.id);
+  } catch (error) {
+    logger.error("FAILED to link stripe subscription to revenuecat for user: " + uid + " with subscription: " + subscription.id, error);
+  }
+}
+
+
 /**
  * Manage subscription status changes.
  */
@@ -724,36 +761,14 @@ const manageSubscriptionStatusChange = async (
       const { customClaims } = await admin.auth().getUser(uid);
       // Set new role in custom claims as long as the subs status allows
       if (['trialing', 'active'].includes(subscription.status)) {
-
-        // https://www.revenuecat.com/docs/web/stripe#5-send-stripe-tokens-to-revenuecat
-        // curl -X POST \
-        //   https://api.revenuecat.com/v1/receipts \
-        //   -H 'Content-Type: application/json' \
-        //   -H 'X-Platform: stripe' \
-        //   -H 'Authorization: Bearer YOUR_REVENUECAT_STRIPE_APP_PUBLIC_API_KEY' \
-        //   -d '{ "app_user_id": "my_app_user_id",
-        //   "fetch_token": "sub_xxxxxxxxxx"
-        //   }'
-        const headers = {
-          'Content-Type': 'application/json',
-          'X-Platform': 'stripe',
-          'Authorization': `Bearer strp_bscjpIVjOVAxvbpdNqhpZrdIapY`,
-        };
-        const data = {
-          app_user_id: uid,
-          fetch_token: subscription.id,
-        };
-        const response = await fetch('https://api.revenuecat.com/v1/receipts', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(data),
-        });
-        console.log('response', response);
+        const linking = linkToRevenueCat(uid, subscription);
 
         logs.userCustomClaimSet(uid, 'stripeRole', role);
         await admin
           .auth()
           .setCustomUserClaims(uid, { ...customClaims, stripeRole: role });
+
+        await linking;
       } else {
         logs.userCustomClaimSet(uid, 'stripeRole', 'null');
         await admin
@@ -761,8 +776,7 @@ const manageSubscriptionStatusChange = async (
           .setCustomUserClaims(uid, { ...customClaims, stripeRole: null });
       }
     } catch (error) {
-      logger.error("failed up date custom claims", error);
-      // User has been deleted, simply return.
+      logger.error("FAILED to update custom claims for user " + uid, error);
       return;
     }
   }
